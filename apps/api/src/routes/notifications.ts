@@ -1,3 +1,15 @@
+/**
+ * @file routes/notifications.ts
+ * @description In-app notification retrieval and read-marking endpoints.
+ *
+ * Notifications are created by the scheduler worker (deadline reminders +
+ * overdue alerts) and indirectly by work-log routes.  This module only
+ * exposes read + mark-read operations; creation is handled by the scheduler.
+ *
+ * Socket.IO channel: `notification:new` — emitted by the scheduler when a
+ * notification row is written; the client-side bell subscribes to this.
+ */
+
 import { Router, Response } from 'express';
 import prisma from '../utils/prisma';
 import { authenticate } from '../middleware/auth';
@@ -13,9 +25,20 @@ router.use(authenticate);
  * /api/notifications:
  *   get:
  *     tags: [Notifications]
- *     summary: Get notifications for current user
+ *     summary: List notifications for the current user
  *     security:
  *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: unread
+ *         schema: { type: boolean }
+ *         description: Pass true to fetch only unread notifications
+ *       - in: query
+ *         name: page
+ *         schema: { type: integer, default: 1 }
+ *       - in: query
+ *         name: limit
+ *         schema: { type: integer, default: 20 }
  */
 router.get('/', async (req: AuthRequest, res: Response) => {
   const { skip, page, limit } = parsePagination(req.query);
@@ -35,7 +58,11 @@ router.get('/', async (req: AuthRequest, res: Response) => {
     }),
   ]);
 
-  return res.json({ success: true, data: notifications, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } });
+  return res.json({
+    success: true,
+    data: notifications,
+    pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+  });
 });
 
 /**
@@ -43,7 +70,7 @@ router.get('/', async (req: AuthRequest, res: Response) => {
  * /api/notifications/{id}/read:
  *   patch:
  *     tags: [Notifications]
- *     summary: Mark notification as read
+ *     summary: Mark a single notification as read
  *     security:
  *       - bearerAuth: []
  */
@@ -51,7 +78,10 @@ router.patch('/:id/read', async (req: AuthRequest, res: Response) => {
   const notif = await prisma.notification.findUnique({ where: { id: req.params.id } });
   if (!notif || notif.userId !== req.user!.userId) return notFound(res);
 
-  const updated = await prisma.notification.update({ where: { id: notif.id }, data: { isRead: true } });
+  const updated = await prisma.notification.update({
+    where: { id: notif.id },
+    data:  { isRead: true },
+  });
   return ok(res, updated);
 });
 
@@ -60,13 +90,16 @@ router.patch('/:id/read', async (req: AuthRequest, res: Response) => {
  * /api/notifications/read-all:
  *   patch:
  *     tags: [Notifications]
- *     summary: Mark all notifications as read
+ *     summary: Mark all of the current user's notifications as read
  *     security:
  *       - bearerAuth: []
  */
 router.patch('/read-all', async (req: AuthRequest, res: Response) => {
-  await prisma.notification.updateMany({ where: { userId: req.user!.userId, isRead: false }, data: { isRead: true } });
-  return ok(res, null, 'All marked as read');
+  await prisma.notification.updateMany({
+    where: { userId: req.user!.userId, isRead: false },
+    data:  { isRead: true },
+  });
+  return ok(res, null, 'All notifications marked as read');
 });
 
 export default router;

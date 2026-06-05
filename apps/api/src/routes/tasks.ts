@@ -1,3 +1,19 @@
+/**
+ * @file routes/tasks.ts
+ * @description Task CRUD, assignment, and status-change endpoints.
+ *
+ * Access control summary:
+ * - GET  /tasks             — all roles (scoped: employee sees only assigned, PM sees project tasks)
+ * - POST /tasks             — Admin or PM (PM must own the project)
+ * - GET  /tasks/:id         — all roles (scoped)
+ * - PATCH /tasks/:id        — Admin/PM for all fields; Employee for status only
+ * - POST /tasks/:id/assign  — Admin or PM (PM must own the project)
+ * - DELETE /tasks/:id       — Admin or PM (PM must own the project)
+ *
+ * Real-time: every mutating operation emits a `task:updated` socket event to
+ * each assignee's private room so the Kanban board updates live.
+ */
+
 import { Router, Response } from 'express';
 import { body, param } from 'express-validator';
 import { TaskStatus, TaskPriority, Role } from '@prisma/client';
@@ -9,10 +25,17 @@ import { AuthRequest } from '../types';
 import { ok, created, notFound, forbidden, badRequest } from '../utils/response';
 import { parsePagination } from '../utils/pagination';
 import { writeAudit } from '../middleware/audit';
+import { emitToUser } from '../utils/socket';
 
 const router = Router({ mergeParams: true });
 router.use(authenticate);
 
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+/**
+ * Returns `true` if the current user may create / modify tasks inside `projectId`.
+ * Admins can touch any project; PMs only their own.
+ */
 async function canManageTask(req: AuthRequest, projectId: string): Promise<boolean> {
   if (req.user!.role === Role.ADMIN) return true;
   if (req.user!.role === Role.PROJECT_MANAGER) {
@@ -23,40 +46,105 @@ async function canManageTask(req: AuthRequest, projectId: string): Promise<boole
 }
 
 /**
+ * Push a `task:updated` Socket.IO event to every user assigned to `taskId`.
+ * Used after any mutation so the Kanban board and task list refresh in real time.
+ *
+ * @param taskId - Database Task ID whose assignees should be notified
+ * @param data   - Payload broadcast to each assignee's room
+ */
+async function broadcastTaskUpdate(taskId: string, data: Record<string, unknown>) {
+  const assignments = await prisma.taskAssignment.findMany({
+    where: { taskId },
+    select: { userId: true },
+  });
+  for (const { userId } of assignments) {
+    emitToUser(userId, 'task:updated', data);
+  }
+}
+
+// ─── Routes ───────────────────────────────────────────────────────────────────
+
+/**
  * @swagger
  * /api/tasks:
  *   get:
  *     tags: [Tasks]
- *     summary: List tasks (scoped by role)
+ *     summary: List tasks (role-scoped)
+ *     description: |
+ *       - **Admin** — all tasks across all projects
+ *       - **Project Manager** — tasks belonging to managed projects
+ *       - **Employee** — only assigned tasks
  *     security:
  *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: status
+ *         schema: { type: string, enum: [TODO, IN_PROGRESS, IN_REVIEW, COMPLETED, BLOCKED] }
+ *       - in: query
+ *         name: priority
+ *         schema: { type: string, enum: [LOW, MEDIUM, HIGH, CRITICAL] }
+ *       - in: query
+ *         name: projectId
+ *         schema: { type: string }
+ *       - in: query
+ *         name: employeeId
+ *         schema: { type: string }
+ *       - in: query
+ *         name: search
+ *         schema: { type: string }
+ *       - in: query
+ *         name: deadlineBefore
+ *         schema: { type: string, format: date-time }
+ *       - in: query
+ *         name: deadlineAfter
+ *         schema: { type: string, format: date-time }
+ *       - in: query
+ *         name: page
+ *         schema: { type: integer, default: 1 }
+ *       - in: query
+ *         name: limit
+ *         schema: { type: integer, default: 20 }
+ *     responses:
+ *       200:
+ *         description: Paginated task list
  */
 router.get('/', async (req: AuthRequest, res: Response) => {
   const { skip, page, limit } = parsePagination(req.query);
-  const status = req.query.status as TaskStatus | undefined;
-  const priority = req.query.priority as TaskPriority | undefined;
-  const employeeId = req.query.employeeId as string | undefined;
-  const projectId = req.query.projectId as string | undefined;
+  const status       = req.query.status       as TaskStatus  | undefined;
+  const priority     = req.query.priority     as TaskPriority | undefined;
+  const employeeId   = req.query.employeeId   as string | undefined;
+  const projectId    = req.query.projectId    as string | undefined;
+  const search       = req.query.search       as string | undefined;
   const deadlineBefore = req.query.deadlineBefore ? new Date(req.query.deadlineBefore as string) : undefined;
-  const deadlineAfter = req.query.deadlineAfter ? new Date(req.query.deadlineAfter as string) : undefined;
-  const search = req.query.search as string | undefined;
+  const deadlineAfter  = req.query.deadlineAfter  ? new Date(req.query.deadlineAfter  as string) : undefined;
+  const overdue        = req.query.overdue === 'true';
 
   const where: Record<string, unknown> = {};
 
+  // Role-scoping
   if (req.user!.role === Role.EMPLOYEE) {
     where['assignments'] = { some: { userId: req.user!.userId } };
   } else if (req.user!.role === Role.PROJECT_MANAGER) {
     where['project'] = { managerId: req.user!.userId };
   }
 
-  if (status) where['status'] = status;
+  // Filters
+  if (status)   where['status']   = status;
   if (priority) where['priority'] = priority;
   if (projectId) where['projectId'] = projectId;
-  if (employeeId && req.user!.role !== Role.EMPLOYEE) where['assignments'] = { some: { userId: employeeId } };
-  if (deadlineBefore || deadlineAfter) {
-    where['deadline'] = { ...(deadlineAfter && { gte: deadlineAfter }), ...(deadlineBefore && { lte: deadlineBefore }) };
+  if (employeeId && req.user!.role !== Role.EMPLOYEE) {
+    where['assignments'] = { some: { userId: employeeId } };
   }
   if (search) where['name'] = { contains: search };
+  if (overdue) {
+    where['deadline'] = { lt: new Date() };
+    where['status']   = { notIn: [TaskStatus.COMPLETED] };
+  } else if (deadlineBefore || deadlineAfter) {
+    where['deadline'] = {
+      ...(deadlineAfter  && { gte: deadlineAfter  }),
+      ...(deadlineBefore && { lte: deadlineBefore }),
+    };
+  }
 
   const [total, tasks] = await Promise.all([
     prisma.task.count({ where }),
@@ -71,7 +159,11 @@ router.get('/', async (req: AuthRequest, res: Response) => {
     }),
   ]);
 
-  return res.json({ success: true, data: tasks, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } });
+  return res.json({
+    success: true,
+    data: tasks,
+    pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+  });
 });
 
 /**
@@ -79,9 +171,25 @@ router.get('/', async (req: AuthRequest, res: Response) => {
  * /api/tasks:
  *   post:
  *     tags: [Tasks]
- *     summary: Create a task (Admin or PM of that project)
+ *     summary: Create a task (Admin or PM of the project)
  *     security:
  *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [name, projectId, deadline]
+ *             properties:
+ *               name:           { type: string }
+ *               description:    { type: string }
+ *               projectId:      { type: string }
+ *               priority:       { type: string, enum: [LOW,MEDIUM,HIGH,CRITICAL] }
+ *               status:         { type: string, enum: [TODO,IN_PROGRESS,IN_REVIEW,COMPLETED,BLOCKED] }
+ *               deadline:       { type: string, format: date-time }
+ *               estimatedHours: { type: number }
+ *               assigneeIds:    { type: array, items: { type: string } }
  */
 router.post(
   '/',
@@ -107,9 +215,11 @@ router.post(
 
     const task = await prisma.task.create({
       data: {
-        name, description, priority: priority || TaskPriority.MEDIUM,
-        status: status || TaskStatus.TODO,
-        deadline: new Date(deadline),
+        name,
+        description,
+        priority:       priority       || TaskPriority.MEDIUM,
+        status:         status         || TaskStatus.TODO,
+        deadline:       new Date(deadline),
         estimatedHours: estimatedHours ? parseFloat(estimatedHours) : null,
         projectId,
         createdById: req.user!.userId,
@@ -118,15 +228,26 @@ router.post(
         }),
       },
       include: {
-        project: { select: { id: true, name: true } },
+        project:     { select: { id: true, name: true } },
         assignments: { include: { user: { select: { id: true, name: true, email: true } } } },
       },
     });
 
+    // Notify each assignee via Socket.IO
+    for (const a of task.assignments) {
+      emitToUser(a.user.id, 'task:assigned', {
+        taskId: task.id,
+        taskName: task.name,
+        projectName: task.project.name,
+        deadline: task.deadline,
+      });
+    }
+
     await writeAudit({
       userId: req.user!.userId, userEmail: req.user!.email,
       action: 'CREATE_TASK', entity: 'Task', entityId: task.id,
-      newValue: { name, projectId, priority, deadline }, ipAddress: req.ip,
+      newValue: { name, projectId, priority, deadline },
+      ipAddress: req.ip,
     });
 
     return created(res, task, 'Task created');
@@ -138,7 +259,7 @@ router.post(
  * /api/tasks/{id}:
  *   get:
  *     tags: [Tasks]
- *     summary: Get task detail
+ *     summary: Get full task detail including work logs and replies
  *     security:
  *       - bearerAuth: []
  */
@@ -151,7 +272,10 @@ router.get('/:id', async (req: AuthRequest, res: Response) => {
       workLogs: {
         include: {
           user: { select: { id: true, name: true } },
-          replies: { include: { user: { select: { id: true, name: true } } }, orderBy: { createdAt: 'asc' } },
+          replies: {
+            include: { user: { select: { id: true, name: true } } },
+            orderBy: { createdAt: 'asc' },
+          },
         },
         orderBy: { createdAt: 'desc' },
       },
@@ -160,10 +284,9 @@ router.get('/:id', async (req: AuthRequest, res: Response) => {
   if (!task) return notFound(res);
 
   if (req.user!.role === Role.EMPLOYEE) {
-    const isAssigned = task.assignments.some((a) => a.user.id === req.user!.userId);
-    if (!isAssigned) return forbidden(res);
-  } else if (req.user!.role === Role.PROJECT_MANAGER && task.project.managerId !== req.user!.userId) {
-    return forbidden(res);
+    if (!task.assignments.some((a) => a.user.id === req.user!.userId)) return forbidden(res);
+  } else if (req.user!.role === Role.PROJECT_MANAGER) {
+    if (task.project.managerId !== req.user!.userId) return forbidden(res);
   }
 
   return ok(res, task);
@@ -174,7 +297,10 @@ router.get('/:id', async (req: AuthRequest, res: Response) => {
  * /api/tasks/{id}:
  *   patch:
  *     tags: [Tasks]
- *     summary: Update task
+ *     summary: Update a task
+ *     description: |
+ *       Employees may only update `status` on their own assigned tasks.
+ *       Admins and PMs can update all fields.
  *     security:
  *       - bearerAuth: []
  */
@@ -196,20 +322,24 @@ router.patch(
     });
     if (!task) return notFound(res);
 
-    // Employees can only update status of their assigned tasks
+    // Employees: can only update `status` on their own assigned tasks
     if (req.user!.role === Role.EMPLOYEE) {
-      const isAssigned = task.assignments.some((a) => a.userId === req.user!.userId);
-      if (!isAssigned) return forbidden(res);
+      if (!task.assignments.some((a) => a.userId === req.user!.userId)) return forbidden(res);
       const { status } = req.body;
-      if (!status) return badRequest(res, 'Employees can only update task status');
+      if (!status) return badRequest(res, 'Employees may only update task status');
 
       const previous = { status: task.status };
-      const updated = await prisma.task.update({ where: { id: task.id }, data: { status } });
+      const updated  = await prisma.task.update({ where: { id: task.id }, data: { status } });
+
       await writeAudit({
         userId: req.user!.userId, userEmail: req.user!.email,
         action: 'UPDATE_TASK_STATUS', entity: 'Task', entityId: task.id,
         previousValue: previous, newValue: { status }, ipAddress: req.ip,
       });
+
+      // Notify all assignees of status change
+      await broadcastTaskUpdate(task.id, { taskId: task.id, status, updatedBy: req.user!.email });
+
       return ok(res, updated);
     }
 
@@ -221,15 +351,15 @@ router.patch(
     const updated = await prisma.task.update({
       where: { id: task.id },
       data: {
-        ...(name && { name }),
+        ...(name        !== undefined && { name }),
         ...(description !== undefined && { description }),
-        ...(status && { status }),
-        ...(priority && { priority }),
-        ...(deadline && { deadline: new Date(deadline) }),
+        ...(status      !== undefined && { status }),
+        ...(priority    !== undefined && { priority }),
+        ...(deadline    !== undefined && { deadline: new Date(deadline) }),
         ...(estimatedHours !== undefined && { estimatedHours: parseFloat(estimatedHours) }),
       },
       include: {
-        project: { select: { id: true, name: true } },
+        project:     { select: { id: true, name: true } },
         assignments: { include: { user: { select: { id: true, name: true, email: true } } } },
       },
     });
@@ -240,6 +370,8 @@ router.patch(
       previousValue: previous, newValue: req.body, ipAddress: req.ip,
     });
 
+    await broadcastTaskUpdate(task.id, { taskId: task.id, status: updated.status, updatedBy: req.user!.email });
+
     return ok(res, updated);
   }
 );
@@ -249,9 +381,18 @@ router.patch(
  * /api/tasks/{id}/assign:
  *   post:
  *     tags: [Tasks]
- *     summary: Assign employees to a task
+ *     summary: Assign one or more employees to a task (upsert — safe to call multiple times)
  *     security:
  *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [userIds]
+ *             properties:
+ *               userIds: { type: array, items: { type: string } }
  */
 router.post(
   '/:id/assign',
@@ -259,17 +400,25 @@ router.post(
   [body('userIds').isArray({ min: 1 })],
   validate,
   async (req: AuthRequest, res: Response) => {
-    const task = await prisma.task.findUnique({ where: { id: req.params.id }, include: { project: true } });
+    const task = await prisma.task.findUnique({
+      where: { id: req.params.id },
+      include: { project: true },
+    });
     if (!task) return notFound(res);
     if (!(await canManageTask(req, task.projectId))) return forbidden(res);
 
     const { userIds } = req.body;
-
-    for (const userId of userIds) {
+    for (const userId of userIds as string[]) {
       await prisma.taskAssignment.upsert({
         where: { taskId_userId: { taskId: task.id, userId } },
         update: {},
         create: { taskId: task.id, userId },
+      });
+      emitToUser(userId, 'task:assigned', {
+        taskId: task.id,
+        taskName: task.name,
+        projectName: task.project.name,
+        deadline: task.deadline,
       });
     }
 
@@ -292,7 +441,7 @@ router.post(
  * /api/tasks/{id}:
  *   delete:
  *     tags: [Tasks]
- *     summary: Delete task (Admin or PM)
+ *     summary: Delete a task (Admin or owning PM)
  *     security:
  *       - bearerAuth: []
  */
