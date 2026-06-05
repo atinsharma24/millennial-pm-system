@@ -74,7 +74,7 @@ app.use((err: Error, _req: express.Request, res: express.Response, _next: expres
   res.status(500).json({ success: false, message: 'Internal server error' });
 });
 
-const PORT = parseInt(process.env.PORT || '4000');
+const PORT = process.env.NODE_ENV === 'test' ? 0 : parseInt(process.env.PORT || '4000');
 
 server.listen(PORT, async () => {
   logger.info(`API server running on port ${PORT}`);

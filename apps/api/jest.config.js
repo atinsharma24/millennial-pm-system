@@ -5,6 +5,7 @@ module.exports = {
   testMatch: ['**/__tests__/**/*.ts', '**/*.test.ts'],
   moduleFileExtensions: ['ts', 'js', 'json'],
   collectCoverageFrom: ['src/**/*.ts', '!src/**/*.d.ts', '!src/__tests__/**'],
+  forceExit: true,
   transform: {
     '^.+\\.ts$': [
       'ts-jest',
