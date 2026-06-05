@@ -81,7 +81,7 @@ request flow sequences.
 
 ```bash
 # 1. Clone
-git clone <repo-url>
+git clone https://github.com/atinsharma24/millennial-pm-system
 cd millennial-pm-system
 
 # 2. API environment
@@ -299,6 +299,6 @@ instance runs the scan.
 
 ## Submission
 
-- **GitHub:** `<paste-after-push>`
+- **GitHub:** https://github.com/atinsharma24/millennial-pm-system
 - **Candidate:** Atin Sharma — atin.sde@gmail.com
 - **Submit to:** yash@millennialcompany.in
