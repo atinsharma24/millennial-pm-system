@@ -1,0 +1,199 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  PROJECT_MANAGER
+  EMPLOYEE
+}
+
+enum ProjectStatus {
+  PLANNING
+  ACTIVE
+  COMPLETED
+  ARCHIVED
+}
+
+enum TaskStatus {
+  TODO
+  IN_PROGRESS
+  IN_REVIEW
+  COMPLETED
+  BLOCKED
+}
+
+enum TaskPriority {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum NotificationType {
+  DEADLINE_48H
+  DEADLINE_24H
+  DEADLINE_12H
+  DEADLINE_1H
+  OVERDUE
+}
+
+model User {
+  id                String   @id @default(uuid())
+  name              String
+  email             String   @unique
+  password          String
+  role              Role     @default(EMPLOYEE)
+  isActive          Boolean  @default(true)
+  refreshToken      String?  @db.Text
+  passwordResetToken String?
+  passwordResetExpires DateTime?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  managedProjects   Project[]          @relation("ProjectManager")
+  taskAssignments   TaskAssignment[]
+  workLogs          WorkLog[]
+  logReplies        LogReply[]
+  notifications     Notification[]
+  auditLogs         AuditLog[]
+
+  @@index([email])
+  @@index([role])
+}
+
+model Project {
+  id          String        @id @default(uuid())
+  name        String
+  description String?       @db.Text
+  startDate   DateTime
+  endDate     DateTime
+  status      ProjectStatus @default(PLANNING)
+  managerId   String
+  createdById String?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  manager     User          @relation("ProjectManager", fields: [managerId], references: [id])
+  tasks       Task[]
+
+  @@index([managerId])
+  @@index([status])
+  @@index([endDate])
+}
+
+model Task {
+  id             String       @id @default(uuid())
+  name           String
+  description    String?      @db.Text
+  priority       TaskPriority @default(MEDIUM)
+  status         TaskStatus   @default(TODO)
+  deadline       DateTime
+  estimatedHours Float?
+  projectId      String
+  createdById    String
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  project        Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  assignments    TaskAssignment[]
+  workLogs       WorkLog[]
+  notifications  Notification[]
+
+  @@index([projectId])
+  @@index([status])
+  @@index([priority])
+  @@index([deadline])
+  @@index([createdById])
+}
+
+model TaskAssignment {
+  id         String   @id @default(uuid())
+  taskId     String
+  userId     String
+  assignedAt DateTime @default(now())
+
+  task       Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([taskId, userId])
+  @@index([userId])
+  @@index([taskId])
+}
+
+model WorkLog {
+  id          String     @id @default(uuid())
+  taskId      String
+  userId      String
+  description String     @db.Text
+  hoursWorked Float
+  attachmentUrl String?
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  task        Task       @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  user        User       @relation(fields: [userId], references: [id])
+  replies     LogReply[]
+
+  @@index([taskId])
+  @@index([userId])
+  @@index([createdAt])
+}
+
+model LogReply {
+  id        String   @id @default(uuid())
+  logId     String
+  userId    String
+  content   String   @db.Text
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  log       WorkLog  @relation(fields: [logId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id])
+
+  @@index([logId])
+}
+
+model Notification {
+  id        String           @id @default(uuid())
+  userId    String
+  taskId    String?
+  type      NotificationType
+  message   String           @db.Text
+  sentAt    DateTime         @default(now())
+  isRead    Boolean          @default(false)
+
+  user      User             @relation(fields: [userId], references: [id])
+  task      Task?            @relation(fields: [taskId], references: [id], onDelete: SetNull)
+
+  @@unique([userId, taskId, type])
+  @@index([userId])
+  @@index([taskId])
+  @@index([sentAt])
+}
+
+model AuditLog {
+  id            String   @id @default(uuid())
+  userId        String?
+  userEmail     String?
+  action        String
+  entity        String
+  entityId      String?
+  previousValue Json?
+  newValue      Json?
+  ipAddress     String?
+  userAgent     String?
+  createdAt     DateTime @default(now())
+
+  user          User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([entity])
+  @@index([createdAt])
+  @@index([action])
+}
