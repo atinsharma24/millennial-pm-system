@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import { useLogin } from '../api/hooks';
 import { useAuthStore } from '../context/AuthStore';
 
@@ -59,6 +59,12 @@ export default function Login() {
           </div>
 
           {error && <p className="text-red-600 text-sm">{error}</p>}
+
+          <div className="flex justify-end">
+            <Link to="/forgot-password" className="text-xs text-brand-600 hover:underline">
+              Forgot password?
+            </Link>
+          </div>
 
           <button
             type="submit"
