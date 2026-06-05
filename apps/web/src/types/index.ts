@@ -23,6 +23,7 @@ export interface Project {
   managerId: string;
   manager?: User;
   completionPct?: number;
+  tasks?: Task[];
   _count?: { tasks: number };
   createdAt?: string;
 }
@@ -42,8 +43,9 @@ export interface Task {
   deadline: string;
   estimatedHours?: number;
   projectId: string;
-  project?: { id: string; name: string };
+  project?: { id: string; name: string; managerId?: string };
   assignments: TaskAssignment[];
+  workLogs?: WorkLog[];
   createdById?: string;
   createdAt?: string;
   _count?: { workLogs: number };

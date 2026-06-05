@@ -89,7 +89,7 @@ export default function TaskDetail() {
           {!task.workLogs?.length ? (
             <p className="p-4 text-sm text-gray-500">No work logs yet.</p>
           ) : (
-            task.workLogs.map((log) => (
+            task.workLogs.map((log: import('../types').WorkLog) => (
               <WorkLogEntry key={log.id} log={log} canReply={!isEmployee || log.userId === user?.id} />
             ))
           )}
