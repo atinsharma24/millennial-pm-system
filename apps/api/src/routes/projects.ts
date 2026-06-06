@@ -9,6 +9,7 @@ import { AuthRequest } from '../types';
 import { ok, created, notFound, forbidden, badRequest } from '../utils/response';
 import { parsePagination } from '../utils/pagination';
 import { writeAudit } from '../middleware/audit';
+import { asyncHandler } from '../utils/asyncHandler';
 
 const router = Router();
 router.use(authenticate);
@@ -28,7 +29,7 @@ function canAccessProject(req: AuthRequest, managerId: string): boolean {
  *     security:
  *       - bearerAuth: []
  */
-router.get('/', async (req: AuthRequest, res: Response) => {
+router.get('/', asyncHandler(async (req: AuthRequest, res: Response) => {
   const { skip, page, limit } = parsePagination(req.query);
   const status = req.query.status as ProjectStatus | undefined;
   const managerId = req.query.managerId as string | undefined;
@@ -63,7 +64,7 @@ router.get('/', async (req: AuthRequest, res: Response) => {
   ]);
 
   return res.json({ success: true, data: projects, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } });
-});
+}));
 
 /**
  * @swagger
@@ -86,7 +87,7 @@ router.post(
     body('status').optional().isIn(Object.values(ProjectStatus)),
   ],
   validate,
-  async (req: AuthRequest, res: Response) => {
+  asyncHandler(async (req: AuthRequest, res: Response) => {
     const { name, description, startDate, endDate, managerId, status } = req.body;
 
     const manager = await prisma.user.findUnique({ where: { id: managerId } });
@@ -113,7 +114,7 @@ router.post(
     });
 
     return created(res, project, 'Project created');
-  }
+  })
 );
 
 /**
@@ -125,7 +126,7 @@ router.post(
  *     security:
  *       - bearerAuth: []
  */
-router.get('/:id', async (req: AuthRequest, res: Response) => {
+router.get('/:id', asyncHandler(async (req: AuthRequest, res: Response) => {
   const project = await prisma.project.findUnique({
     where: { id: req.params.id },
     include: {
@@ -155,7 +156,7 @@ router.get('/:id', async (req: AuthRequest, res: Response) => {
   const completionPct = total > 0 ? Math.round((completed / total) * 100) : 0;
 
   return ok(res, { ...project, completionPct });
-});
+}));
 
 /**
  * @swagger
@@ -179,7 +180,7 @@ router.patch(
     body('managerId').optional(),
   ],
   validate,
-  async (req: AuthRequest, res: Response) => {
+  asyncHandler(async (req: AuthRequest, res: Response) => {
     const project = await prisma.project.findUnique({ where: { id: req.params.id } });
     if (!project) return notFound(res);
     if (!canAccessProject(req, project.managerId)) return forbidden(res);
@@ -209,7 +210,7 @@ router.patch(
     });
 
     return ok(res, updated);
-  }
+  })
 );
 
 /**
@@ -221,7 +222,7 @@ router.patch(
  *     security:
  *       - bearerAuth: []
  */
-router.delete('/:id', requireAdmin, async (req: AuthRequest, res: Response) => {
+router.delete('/:id', requireAdmin, asyncHandler(async (req: AuthRequest, res: Response) => {
   const project = await prisma.project.findUnique({ where: { id: req.params.id } });
   if (!project) return notFound(res);
 
@@ -234,6 +235,6 @@ router.delete('/:id', requireAdmin, async (req: AuthRequest, res: Response) => {
   });
 
   return ok(res, null, 'Project deleted');
-});
+}));
 
 export default router;

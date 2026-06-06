@@ -162,15 +162,22 @@ export async function scanAndEnqueueReminders(): Promise<void> {
       },
     });
 
+    if (tasks.length === 0) continue;
+
+    // Batch fetch existing notifications for this window to avoid N+1 queries
+    const taskIds = tasks.map((t) => t.id);
+    const existingNotifs = await prisma.notification.findMany({
+      where: { type: notifType, taskId: { in: taskIds } },
+      select: { userId: true, taskId: true },
+    });
+    const existingSet = new Set(existingNotifs.map((n) => `${n.userId}-${n.taskId}`));
+
     for (const task of tasks) {
       for (const assignment of task.assignments) {
         const employee = assignment.user;
 
         // Idempotency check — skip if this exact (user, task, type) was already sent
-        const existing = await prisma.notification.findUnique({
-          where: { userId_taskId_type: { userId: employee.id, taskId: task.id, type: notifType } },
-        });
-        if (existing) continue;
+        if (existingSet.has(`${employee.id}-${task.id}`)) continue;
 
         // Persist notification row
         const notif = await prisma.notification.create({
@@ -221,17 +228,23 @@ export async function scanAndEnqueueReminders(): Promise<void> {
     },
   });
 
-  for (const task of overdueTasks) {
-    const pm = task.project.manager;
+  if (overdueTasks.length > 0) {
+    // Batch fetch existing overdue notifications
+    const overdueTaskIds = overdueTasks.map((t) => t.id);
+    const existingOverdue = await prisma.notification.findMany({
+      where: { type: NotificationType.OVERDUE, taskId: { in: overdueTaskIds } },
+      select: { userId: true, taskId: true },
+    });
+    const overdueSet = new Set(existingOverdue.map((n) => `${n.userId}-${n.taskId}`));
 
-    for (const assignment of task.assignments) {
-      const employee = assignment.user;
+    for (const task of overdueTasks) {
+      const pm = task.project.manager;
 
-      // Guard: skip if employee was already notified overdue
-      const empAlreadySent = await prisma.notification.findUnique({
-        where: { userId_taskId_type: { userId: employee.id, taskId: task.id, type: NotificationType.OVERDUE } },
-      });
-      if (!empAlreadySent) {
+      for (const assignment of task.assignments) {
+        const employee = assignment.user;
+
+        // Guard: skip if employee was already notified overdue
+        if (!overdueSet.has(`${employee.id}-${task.id}`)) {
         const empNotif = await prisma.notification.create({
           data: {
             userId:  employee.id,
@@ -260,10 +273,7 @@ export async function scanAndEnqueueReminders(): Promise<void> {
       }
 
       // Guard: skip if PM was already notified overdue for this task
-      const pmAlreadySent = await prisma.notification.findFirst({
-        where: { userId: pm.id, taskId: task.id, type: NotificationType.OVERDUE },
-      });
-      if (!pmAlreadySent) {
+      if (!overdueSet.has(`${pm.id}-${task.id}`)) {
         const pmNotif = await prisma.notification.create({
           data: {
             userId:  pm.id,
@@ -292,7 +302,6 @@ export async function scanAndEnqueueReminders(): Promise<void> {
       }
     }
   }
-
   logger.info(
     `Scan complete — overdue: ${overdueTasks.length}, ` +
     `windows checked: ${REMINDER_WINDOWS_HOURS.join('h, ')}h`

@@ -10,6 +10,7 @@ import { AuthRequest } from '../types';
 import { ok, created, unauthorized, badRequest, notFound, serverError } from '../utils/response';
 import { writeAudit } from '../middleware/audit';
 import { sendEmail } from '../services/email';
+import { asyncHandler } from '../utils/asyncHandler';
 
 const router = Router();
 
@@ -53,7 +54,7 @@ router.post(
   '/login',
   [body('email').isEmail(), body('password').notEmpty()],
   validate,
-  async (req: Request, res: Response) => {
+  asyncHandler(async (req: Request, res: Response) => {
     const { email, password } = req.body;
     const user = await prisma.user.findUnique({ where: { email } });
     if (!user || !user.isActive) return unauthorized(res, 'Invalid credentials');
@@ -77,7 +78,7 @@ router.post(
       refreshToken,
       user: { id: user.id, name: user.name, email: user.email, role: user.role },
     });
-  }
+  })
 );
 
 /**
@@ -87,7 +88,7 @@ router.post(
  *     tags: [Auth]
  *     summary: Refresh access token
  */
-router.post('/refresh', async (req: Request, res: Response) => {
+router.post('/refresh', asyncHandler(async (req: Request, res: Response) => {
   const { refreshToken } = req.body;
   if (!refreshToken) return unauthorized(res);
 
@@ -104,7 +105,7 @@ router.post('/refresh', async (req: Request, res: Response) => {
   } catch {
     return unauthorized(res, 'Invalid refresh token');
   }
-});
+}));
 
 /**
  * @swagger
@@ -115,7 +116,7 @@ router.post('/refresh', async (req: Request, res: Response) => {
  *     security:
  *       - bearerAuth: []
  */
-router.post('/logout', authenticate, async (req: AuthRequest, res: Response) => {
+router.post('/logout', authenticate, asyncHandler(async (req: AuthRequest, res: Response) => {
   await prisma.user.update({ where: { id: req.user!.userId }, data: { refreshToken: null } });
   await writeAudit({
     userId: req.user!.userId, userEmail: req.user!.email,
@@ -123,7 +124,7 @@ router.post('/logout', authenticate, async (req: AuthRequest, res: Response) => 
     ipAddress: req.ip,
   });
   return ok(res, null, 'Logged out');
-});
+}));
 
 /**
  * @swagger
@@ -134,14 +135,14 @@ router.post('/logout', authenticate, async (req: AuthRequest, res: Response) => 
  *     security:
  *       - bearerAuth: []
  */
-router.get('/me', authenticate, async (req: AuthRequest, res: Response) => {
+router.get('/me', authenticate, asyncHandler(async (req: AuthRequest, res: Response) => {
   const user = await prisma.user.findUnique({
     where: { id: req.user!.userId },
     select: { id: true, name: true, email: true, role: true, createdAt: true },
   });
   if (!user) return notFound(res);
   return ok(res, user);
-});
+}));
 
 /**
  * @swagger
@@ -154,7 +155,7 @@ router.post(
   '/forgot-password',
   [body('email').isEmail()],
   validate,
-  async (req: Request, res: Response) => {
+  asyncHandler(async (req: Request, res: Response) => {
     const { email } = req.body;
     const user = await prisma.user.findUnique({ where: { email } });
     // Always return success to prevent user enumeration
@@ -176,7 +177,7 @@ router.post(
     });
 
     return ok(res, null, 'If the email exists, a reset link has been sent');
-  }
+  })
 );
 
 /**
@@ -190,7 +191,7 @@ router.post(
   '/reset-password',
   [body('token').notEmpty(), body('password').isLength({ min: 8 })],
   validate,
-  async (req: Request, res: Response) => {
+  asyncHandler(async (req: Request, res: Response) => {
     const { token, password } = req.body;
     const user = await prisma.user.findFirst({
       where: { passwordResetToken: token, passwordResetExpires: { gte: new Date() } },
@@ -204,7 +205,7 @@ router.post(
     });
 
     return ok(res, null, 'Password reset successful');
-  }
+  })
 );
 
 export default router;

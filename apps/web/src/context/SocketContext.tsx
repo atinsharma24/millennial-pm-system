@@ -68,12 +68,28 @@ export function SocketProvider({ children }: { children: ReactNode }) {
     const socket = io(SOCKET_URL, {
       path: '/socket.io',
       transports: ['websocket', 'polling'],
+      /**
+       * Pass the JWT access token in the Socket.IO handshake auth object.
+       *
+       * The server's io.use() middleware (index.ts) verifies this token and
+       * derives the user's private room from the decoded payload — it never
+       * trusts a client-supplied userId string. This prevents any connected
+       * socket from subscribing to another user's notification room.
+       *
+       * If the token is missing or expired, the server rejects the connection
+       * and `socket.on('connect_error')` fires on this client.
+       */
+      auth: { token: useAuthStore.getState().accessToken },
     });
     socketRef.current = socket;
 
     socket.on('connect', () => {
-      // Join the private user room immediately
-      socket.emit('join', user.id);
+      /**
+       * Room join is now handled server-side automatically.
+       * The server calls socket.join(`user:${userId}`) in the `connection`
+       * handler after the JWT middleware has verified the token.
+       * No client-side `join` emit is required.
+       */
     });
 
     /** A new in-app notification arrived (deadline reminder or overdue alert). */

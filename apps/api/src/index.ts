@@ -21,6 +21,7 @@ import path from 'path';
 import swaggerUi from 'swagger-ui-express';
 import http from 'http';
 import { Server as SocketServer } from 'socket.io';
+import jwt from 'jsonwebtoken';
 
 import authRouter from './routes/auth';
 import usersRouter from './routes/users';
@@ -34,6 +35,24 @@ import { swaggerSpec } from './swagger';
 import { startScheduler } from './workers/scheduler';
 import { setIo } from './utils/socket';
 import logger from './utils/logger';
+
+// ─── Startup env validation ───────────────────────────────────────────────────
+/**
+ * Fail fast: if a required env var is missing the app should crash at boot with
+ * a clear error rather than silently starting and failing on the first request.
+ *
+ * Required vars:
+ *   - JWT_ACCESS_SECRET  — used to sign/verify access tokens
+ *   - JWT_REFRESH_SECRET — used to sign/verify refresh tokens
+ *   - DATABASE_URL       — Prisma connection string
+ */
+const REQUIRED_ENV = ['JWT_ACCESS_SECRET', 'JWT_REFRESH_SECRET', 'DATABASE_URL'];
+for (const key of REQUIRED_ENV) {
+  if (!process.env[key]) {
+    logger.error(`Missing required environment variable: ${key}`);
+    process.exit(1);
+  }
+}
 
 const app = express();
 const server = http.createServer(app);
@@ -58,15 +77,51 @@ const io = new SocketServer(server, {
 // Register the singleton so route handlers can reach it without circular deps
 setIo(io);
 
+/**
+ * Socket.IO authentication middleware — runs before any event handler.
+ *
+ * The client must pass a valid JWT access token in the handshake `auth` object:
+ * ```js
+ * io(SOCKET_URL, { auth: { token: accessToken } })
+ * ```
+ *
+ * We verify the token server-side and attach the decoded payload to
+ * `socket.data.userId`.  The `join` handler below then uses THAT value,
+ * never a client-supplied userId string.  This prevents any connected
+ * client from subscribing to another user's private notification room.
+ *
+ * If the token is missing or invalid, the connection is refused with a
+ * 401 error (the client's socket.on('connect_error') fires).
+ */
+io.use((socket, next) => {
+  const token = socket.handshake.auth?.token as string | undefined;
+  if (!token) {
+    return next(new Error('Authentication required: no token provided'));
+  }
+  try {
+    const payload = jwt.verify(token, process.env.JWT_ACCESS_SECRET!) as { userId: string };
+    socket.data.userId = payload.userId;
+    next();
+  } catch {
+    next(new Error('Authentication required: invalid or expired token'));
+  }
+});
+
 io.on('connection', (socket) => {
   /**
-   * Client emits `join` with their user ID immediately after connecting.
-   * We place them in a private room so we can push targeted events.
+   * Client connects → we join them to their private room automatically.
+   *
+   * The userId is taken from the VERIFIED JWT payload (socket.data.userId),
+   * NOT from a client-emitted event.  This prevents any client from
+   * joining another user's room by emitting a fake userId.
+   *
+   * The `join` event is kept for backward compatibility (client may still
+   * emit it) but the server ignores the client-provided value and uses the
+   * token-derived userId instead.
    */
-  socket.on('join', (userId: string) => {
-    socket.join(`user:${userId}`);
-    logger.debug(`Socket ${socket.id} joined room user:${userId}`);
-  });
+  const userId = socket.data.userId as string;
+  socket.join(`user:${userId}`);
+  logger.debug(`Socket ${socket.id} authenticated and joined room user:${userId}`);
 
   socket.on('disconnect', () => {
     logger.debug(`Socket ${socket.id} disconnected`);
@@ -84,11 +139,20 @@ app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
 // ─── Rate limiting ─────────────────────────────────────────────────────────────
-// Tighten auth routes to 30 req / 15 min to limit brute-force attempts
+/**
+ * Auth routes: 30 req / 15 min — limit brute-force login/reset attempts.
+ * Reports routes: 20 req / 1 min — prevent expensive aggregation DoS.
+ * Upload routes (worklogs POST): 30 req / 10 min — prevent upload flooding.
+ */
 app.use('/api/auth', rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 30,
   message: { success: false, message: 'Too many requests, please try again later' },
+}));
+app.use('/api/reports', rateLimit({
+  windowMs: 60 * 1000,
+  max: 20,
+  message: { success: false, message: 'Too many report requests, please slow down' },
 }));
 
 // ─── Static files ──────────────────────────────────────────────────────────────
@@ -145,5 +209,42 @@ server.listen(PORT, async () => {
     }
   }
 });
+
+// ─── Graceful shutdown ────────────────────────────────────────────────────────
+/**
+ * Handle SIGTERM (Render, Docker stop) and SIGINT (Ctrl+C in dev).
+ *
+ * On shutdown:
+ * 1. Stop accepting new HTTP connections (server.close)
+ * 2. Close Socket.IO (stops sending events)
+ * 3. Disconnect Prisma (flushes in-flight queries, releases DB connections)
+ * 4. BullMQ queue/worker instances close automatically when the process exits
+ *    since they don't hold the event loop open indefinitely.
+ *
+ * Without this handler, Render sends SIGTERM and the process is force-killed
+ * after 10 s, potentially interrupting in-flight DB transactions.
+ */
+import prisma from './utils/prisma';
+import { emailQueue, scanQueue } from './workers/scheduler';
+
+async function shutdown(signal: string) {
+  logger.info(`Received ${signal} — gracefully shutting down`);
+  server.close(async () => {
+    try {
+      io.close();
+      await emailQueue.close();
+      await scanQueue.close();
+      await prisma.$disconnect();
+      logger.info('Graceful shutdown complete');
+      process.exit(0);
+    } catch (err) {
+      logger.error('Error during shutdown', err);
+      process.exit(1);
+    }
+  });
+}
+
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT',  () => shutdown('SIGINT'));
 
 export { app, server, io };

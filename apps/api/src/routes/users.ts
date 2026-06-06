@@ -10,6 +10,7 @@ import { AuthRequest } from '../types';
 import { ok, created, notFound, conflict, badRequest } from '../utils/response';
 import { parsePagination } from '../utils/pagination';
 import { writeAudit } from '../middleware/audit';
+import { asyncHandler } from '../utils/asyncHandler';
 
 const router = Router();
 router.use(authenticate);
@@ -23,7 +24,7 @@ router.use(authenticate);
  *     security:
  *       - bearerAuth: []
  */
-router.get('/', requireAdmin, async (req: AuthRequest, res: Response) => {
+router.get('/', requireAdmin, asyncHandler(async (req: AuthRequest, res: Response) => {
   const { skip, page, limit } = parsePagination(req.query);
   const role = req.query.role as Role | undefined;
   const search = req.query.search as string | undefined;
@@ -43,7 +44,7 @@ router.get('/', requireAdmin, async (req: AuthRequest, res: Response) => {
   ]);
 
   return res.json({ success: true, data: users, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } });
-});
+}));
 
 /**
  * @swagger
@@ -64,7 +65,7 @@ router.post(
     body('role').isIn(Object.values(Role)),
   ],
   validate,
-  async (req: AuthRequest, res: Response) => {
+  asyncHandler(async (req: AuthRequest, res: Response) => {
     const { name, email, password, role } = req.body;
     const exists = await prisma.user.findUnique({ where: { email } });
     if (exists) return conflict(res, 'Email already registered');
@@ -82,7 +83,7 @@ router.post(
     });
 
     return created(res, user, 'User created');
-  }
+  })
 );
 
 /**
@@ -94,14 +95,14 @@ router.post(
  *     security:
  *       - bearerAuth: []
  */
-router.get('/:id', requireAdmin, async (req: AuthRequest, res: Response) => {
+router.get('/:id', requireAdmin, asyncHandler(async (req: AuthRequest, res: Response) => {
   const user = await prisma.user.findUnique({
     where: { id: req.params.id },
     select: { id: true, name: true, email: true, role: true, isActive: true, createdAt: true },
   });
   if (!user) return notFound(res);
   return ok(res, user);
-});
+}));
 
 /**
  * @swagger
@@ -122,7 +123,7 @@ router.patch(
     body('isActive').optional().isBoolean(),
   ],
   validate,
-  async (req: AuthRequest, res: Response) => {
+  asyncHandler(async (req: AuthRequest, res: Response) => {
     const user = await prisma.user.findUnique({ where: { id: req.params.id } });
     if (!user) return notFound(res);
 
@@ -142,7 +143,7 @@ router.patch(
     });
 
     return ok(res, updated);
-  }
+  })
 );
 
 /**
@@ -154,7 +155,7 @@ router.patch(
  *     security:
  *       - bearerAuth: []
  */
-router.delete('/:id', requireAdmin, async (req: AuthRequest, res: Response) => {
+router.delete('/:id', requireAdmin, asyncHandler(async (req: AuthRequest, res: Response) => {
   const user = await prisma.user.findUnique({ where: { id: req.params.id } });
   if (!user) return notFound(res);
   if (user.id === req.user!.userId) return badRequest(res, 'Cannot delete yourself');
@@ -168,6 +169,6 @@ router.delete('/:id', requireAdmin, async (req: AuthRequest, res: Response) => {
   });
 
   return ok(res, null, 'User deleted');
-});
+}));
 
 export default router;

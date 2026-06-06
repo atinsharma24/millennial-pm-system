@@ -6,6 +6,7 @@ import { requireAdmin } from '../middleware/rbac';
 import { AuthRequest } from '../types';
 import { ok } from '../utils/response';
 import { parsePagination } from '../utils/pagination';
+import { asyncHandler } from '../utils/asyncHandler';
 
 const router = Router();
 router.use(authenticate, requireAdmin);
@@ -19,7 +20,7 @@ router.use(authenticate, requireAdmin);
  *     security:
  *       - bearerAuth: []
  */
-router.get('/', async (req: AuthRequest, res: Response) => {
+router.get('/', asyncHandler(async (req: AuthRequest, res: Response) => {
   const { skip, page, limit } = parsePagination(req.query);
   const userId = req.query.userId as string | undefined;
   const entity = req.query.entity as string | undefined;
@@ -43,6 +44,6 @@ router.get('/', async (req: AuthRequest, res: Response) => {
   ]);
 
   return res.json({ success: true, data: logs, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } });
-});
+}));
 
 export default router;

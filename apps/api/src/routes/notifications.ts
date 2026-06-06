@@ -16,6 +16,7 @@ import { authenticate } from '../middleware/auth';
 import { AuthRequest } from '../types';
 import { ok, notFound } from '../utils/response';
 import { parsePagination } from '../utils/pagination';
+import { asyncHandler } from '../utils/asyncHandler';
 
 const router = Router();
 router.use(authenticate);
@@ -40,7 +41,7 @@ router.use(authenticate);
  *         name: limit
  *         schema: { type: integer, default: 20 }
  */
-router.get('/', async (req: AuthRequest, res: Response) => {
+router.get('/', asyncHandler(async (req: AuthRequest, res: Response) => {
   const { skip, page, limit } = parsePagination(req.query);
   const unreadOnly = req.query.unread === 'true';
 
@@ -63,7 +64,7 @@ router.get('/', async (req: AuthRequest, res: Response) => {
     data: notifications,
     pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
   });
-});
+}));
 
 /**
  * @swagger
@@ -74,7 +75,7 @@ router.get('/', async (req: AuthRequest, res: Response) => {
  *     security:
  *       - bearerAuth: []
  */
-router.patch('/:id/read', async (req: AuthRequest, res: Response) => {
+router.patch('/:id/read', asyncHandler(async (req: AuthRequest, res: Response) => {
   const notif = await prisma.notification.findUnique({ where: { id: req.params.id } });
   if (!notif || notif.userId !== req.user!.userId) return notFound(res);
 
@@ -83,7 +84,7 @@ router.patch('/:id/read', async (req: AuthRequest, res: Response) => {
     data:  { isRead: true },
   });
   return ok(res, updated);
-});
+}));
 
 /**
  * @swagger
@@ -94,12 +95,12 @@ router.patch('/:id/read', async (req: AuthRequest, res: Response) => {
  *     security:
  *       - bearerAuth: []
  */
-router.patch('/read-all', async (req: AuthRequest, res: Response) => {
+router.patch('/read-all', asyncHandler(async (req: AuthRequest, res: Response) => {
   await prisma.notification.updateMany({
     where: { userId: req.user!.userId, isRead: false },
     data:  { isRead: true },
   });
   return ok(res, null, 'All notifications marked as read');
-});
+}));
 
 export default router;

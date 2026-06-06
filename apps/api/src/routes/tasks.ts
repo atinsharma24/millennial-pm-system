@@ -26,6 +26,7 @@ import { ok, created, notFound, forbidden, badRequest } from '../utils/response'
 import { parsePagination } from '../utils/pagination';
 import { writeAudit } from '../middleware/audit';
 import { emitToUser } from '../utils/socket';
+import { asyncHandler } from '../utils/asyncHandler';
 
 const router = Router({ mergeParams: true });
 router.use(authenticate);
@@ -108,7 +109,7 @@ async function broadcastTaskUpdate(taskId: string, data: Record<string, unknown>
  *       200:
  *         description: Paginated task list
  */
-router.get('/', async (req: AuthRequest, res: Response) => {
+router.get('/', asyncHandler(async (req: AuthRequest, res: Response) => {
   const { skip, page, limit } = parsePagination(req.query);
   const status       = req.query.status       as TaskStatus  | undefined;
   const priority     = req.query.priority     as TaskPriority | undefined;
@@ -164,7 +165,7 @@ router.get('/', async (req: AuthRequest, res: Response) => {
     data: tasks,
     pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
   });
-});
+}));
 
 /**
  * @swagger
@@ -205,7 +206,7 @@ router.post(
     body('assigneeIds').optional().isArray(),
   ],
   validate,
-  async (req: AuthRequest, res: Response) => {
+  asyncHandler(async (req: AuthRequest, res: Response) => {
     const { name, description, projectId, priority, status, deadline, estimatedHours, assigneeIds } = req.body;
 
     if (!(await canManageTask(req, projectId))) return forbidden(res);
@@ -233,7 +234,7 @@ router.post(
       },
     });
 
-    // Notify each assignee via Socket.IO
+    // Notify each assignee via Socket.IO (live event for online users)
     for (const a of task.assignments) {
       emitToUser(a.user.id, 'task:assigned', {
         taskId: task.id,
@@ -241,6 +242,20 @@ router.post(
         projectName: task.project.name,
         deadline: task.deadline,
       });
+
+      /**
+       * Persist a Notification row so the assignment appears in the
+       * /notifications history page even for users who were offline.
+       * Best-effort: failure here must not fail the task creation.
+       */
+      await prisma.notification.create({
+        data: {
+          userId:  a.user.id,
+          taskId:  task.id,
+          type:    'TASK_ASSIGNED' as any,
+          message: `You were assigned to "${task.name}" in ${task.project.name}`,
+        },
+      }).catch(() => { /* best-effort */ });
     }
 
     await writeAudit({
@@ -251,7 +266,7 @@ router.post(
     });
 
     return created(res, task, 'Task created');
-  }
+  })
 );
 
 /**
@@ -263,7 +278,7 @@ router.post(
  *     security:
  *       - bearerAuth: []
  */
-router.get('/:id', async (req: AuthRequest, res: Response) => {
+router.get('/:id', asyncHandler(async (req: AuthRequest, res: Response) => {
   const task = await prisma.task.findUnique({
     where: { id: req.params.id },
     include: {
@@ -290,7 +305,7 @@ router.get('/:id', async (req: AuthRequest, res: Response) => {
   }
 
   return ok(res, task);
-});
+}));
 
 /**
  * @swagger
@@ -315,7 +330,7 @@ router.patch(
     body('estimatedHours').optional().isFloat({ min: 0 }),
   ],
   validate,
-  async (req: AuthRequest, res: Response) => {
+  asyncHandler(async (req: AuthRequest, res: Response) => {
     const task = await prisma.task.findUnique({
       where: { id: req.params.id },
       include: { project: true, assignments: true },
@@ -373,7 +388,7 @@ router.patch(
     await broadcastTaskUpdate(task.id, { taskId: task.id, status: updated.status, updatedBy: req.user!.email });
 
     return ok(res, updated);
-  }
+  })
 );
 
 /**
@@ -399,7 +414,7 @@ router.post(
   requireAdminOrPM,
   [body('userIds').isArray({ min: 1 })],
   validate,
-  async (req: AuthRequest, res: Response) => {
+  asyncHandler(async (req: AuthRequest, res: Response) => {
     const task = await prisma.task.findUnique({
       where: { id: req.params.id },
       include: { project: true },
@@ -414,12 +429,28 @@ router.post(
         update: {},
         create: { taskId: task.id, userId },
       });
+
+      // Live socket event for the assignee (if online)
       emitToUser(userId, 'task:assigned', {
         taskId: task.id,
         taskName: task.name,
         projectName: task.project.name,
         deadline: task.deadline,
       });
+
+      /**
+       * Persist a Notification row so the /notifications page shows the
+       * assignment even if the user was offline when it happened.
+       * Best-effort — assignment still succeeds even if this fails.
+       */
+      await prisma.notification.create({
+        data: {
+          userId,
+          taskId: task.id,
+          type:   'TASK_ASSIGNED' as any,
+          message: `You were assigned to "${task.name}" in ${task.project.name}`,
+        },
+      }).catch(() => { /* best-effort */ });
     }
 
     await writeAudit({
@@ -433,7 +464,7 @@ router.post(
       include: { assignments: { include: { user: { select: { id: true, name: true, email: true } } } } },
     });
     return ok(res, updated);
-  }
+  })
 );
 
 /**
@@ -445,7 +476,7 @@ router.post(
  *     security:
  *       - bearerAuth: []
  */
-router.delete('/:id', requireAdminOrPM, async (req: AuthRequest, res: Response) => {
+router.delete('/:id', requireAdminOrPM, asyncHandler(async (req: AuthRequest, res: Response) => {
   const task = await prisma.task.findUnique({ where: { id: req.params.id } });
   if (!task) return notFound(res);
   if (!(await canManageTask(req, task.projectId))) return forbidden(res);
@@ -459,6 +490,6 @@ router.delete('/:id', requireAdminOrPM, async (req: AuthRequest, res: Response) 
   });
 
   return ok(res, null, 'Task deleted');
-});
+}));
 
 export default router;

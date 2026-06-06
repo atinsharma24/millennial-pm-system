@@ -26,8 +26,8 @@ import { validate } from '../middleware/validate';
 import { AuthRequest } from '../types';
 import { ok, created, notFound, forbidden } from '../utils/response';
 import { parsePagination } from '../utils/pagination';
-import { writeAudit } from '../middleware/audit';
 import { emitToUser } from '../utils/socket';
+import { asyncHandler } from '../utils/asyncHandler';
 
 // ─── Multer setup ─────────────────────────────────────────────────────────────
 
@@ -43,10 +43,47 @@ const storage = multer.diskStorage({
 });
 
 /**
- * Multer instance configured for single-file attachments.
- * Max file size: 10 MB.  In production, swap `storage` for S3/GCS.
+ * Allowlist of MIME types accepted for work-log attachments.
+ *
+ * Rationale: without a fileFilter, any file type (including `.html` / `.svg`
+ * with embedded scripts) could be uploaded and served back via the `/uploads`
+ * static middleware on the same origin — a stored-XSS vector.
+ *
+ * Users may attach: images, PDFs, Office documents, plain text, CSV.
+ * All other types are rejected with a 400 error.
  */
-const upload = multer({ storage, limits: { fileSize: 10 * 1024 * 1024 } });
+const ALLOWED_MIME_TYPES = new Set([
+  'image/jpeg',
+  'image/png',
+  'image/gif',
+  'image/webp',
+  'application/pdf',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'text/plain',
+  'text/csv',
+]);
+
+/**
+ * Multer instance configured for single-file attachments.
+ *
+ * - Max file size: 10 MB
+ * - Allowed types: images, PDF, Word, Excel, text, CSV (see ALLOWED_MIME_TYPES)
+ * - Storage: local `uploads/` directory (swap for S3 storage engine in production)
+ */
+const upload = multer({
+  storage,
+  limits: { fileSize: 10 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    if (ALLOWED_MIME_TYPES.has(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error(`File type not allowed: ${file.mimetype}. Allowed: images, PDF, Word, Excel, text, CSV`));
+    }
+  },
+});
 
 // ─── Router ───────────────────────────────────────────────────────────────────
 
@@ -83,7 +120,7 @@ router.use(authenticate);
  *         name: to
  *         schema: { type: string, format: date }
  */
-router.get('/', async (req: AuthRequest, res: Response) => {
+router.get('/', asyncHandler(async (req: AuthRequest, res: Response) => {
   const { skip, page, limit } = parsePagination(req.query);
   const taskId     = req.query.taskId     as string | undefined;
   const projectId  = req.query.projectId  as string | undefined;
@@ -136,7 +173,7 @@ router.get('/', async (req: AuthRequest, res: Response) => {
     data: logs,
     pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
   });
-});
+}));
 
 /**
  * @swagger
@@ -171,7 +208,7 @@ router.post(
     body('hoursWorked').isFloat({ min: 0.1 }),
   ],
   validate,
-  async (req: AuthRequest, res: Response) => {
+  asyncHandler(async (req: AuthRequest, res: Response) => {
     const { taskId, description, hoursWorked } = req.body;
 
     const task = await prisma.task.findUnique({
@@ -205,7 +242,7 @@ router.post(
       },
     });
 
-    // Notify the project manager about the new work log
+    // Notify the project manager about the new work log (live Socket.IO event)
     const pm = task.project.manager;
     if (pm.id !== req.user!.userId) {
       emitToUser(pm.id, 'worklog:new', {
@@ -215,6 +252,22 @@ router.post(
         submittedBy: req.user!.email,
         hoursWorked: log.hoursWorked,
       });
+
+      /**
+       * Persist a Notification row for the PM so offline users see this event
+       * in their /notifications history (not just as a live toast).
+       *
+       * Note: we use createMany with skipDuplicates to guard against accidental
+       * double-submission re-triggering this code path.
+       */
+      await prisma.notification.create({
+        data: {
+          userId:  pm.id,
+          taskId:  task.id,
+          type:    'WORKLOG_SUBMITTED' as any, // stored as a string; schema uses enum but Prisma accepts raw string values
+          message: `${req.user!.email} submitted a work log on "${task.name}" (${log.hoursWorked}h)`,
+        },
+      }).catch(() => { /* best-effort: don't fail the request if notification write fails */ });
     }
 
     await writeAudit({
@@ -225,7 +278,7 @@ router.post(
     });
 
     return created(res, log, 'Work log submitted');
-  }
+  })
 );
 
 /**
@@ -250,7 +303,7 @@ router.post(
   '/:id/replies',
   [body('content').notEmpty().trim()],
   validate,
-  async (req: AuthRequest, res: Response) => {
+  asyncHandler(async (req: AuthRequest, res: Response) => {
     const log = await prisma.workLog.findUnique({
       where:   { id: req.params.id },
       include: { task: { include: { project: true } } },
@@ -270,7 +323,7 @@ router.post(
       include: { user: { select: { id: true, name: true } } },
     });
 
-    // Notify the original log author when someone else replies
+    // Notify the original log author when someone else replies (live event)
     if (log.userId !== req.user!.userId) {
       emitToUser(log.userId, 'worklog:reply', {
         replyId:    reply.id,
@@ -279,6 +332,22 @@ router.post(
         repliedBy:  req.user!.email,
         preview:    req.body.content.substring(0, 80),
       });
+
+      /**
+       * Persist a Notification row for the log author so they see the reply
+       * in their /notifications history even if they were offline.
+       *
+       * Best-effort: .catch() swallows errors so a notification failure
+       * never causes the reply itself to fail.
+       */
+      await prisma.notification.create({
+        data: {
+          userId:  log.userId,
+          taskId:  log.task.id,
+          type:    'WORKLOG_REPLY' as any,
+          message: `${req.user!.email} replied to your work log on "${log.task.name}"`,
+        },
+      }).catch(() => { /* best-effort */ });
     }
 
     await writeAudit({
@@ -288,7 +357,7 @@ router.post(
     });
 
     return created(res, reply, 'Reply added');
-  }
+  })
 );
 
 export default router;

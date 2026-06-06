@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useWorkLogs } from '../api/hooks';
+import { useWorkLogs, useProjects, useUsers } from '../api/hooks';
 import { useAuthStore } from '../context/AuthStore';
 import Spinner from '../components/Spinner';
 import { format } from 'date-fns';
@@ -9,10 +9,17 @@ export default function WorkLogs() {
   const { user } = useAuthStore();
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
+  const [projectId, setProjectId] = useState('');
+  const [employeeId, setEmployeeId] = useState('');
+
+  const { data: projectsData } = useProjects();
+  const { data: employeesData } = useUsers({ role: 'EMPLOYEE' });
 
   const { data, isLoading } = useWorkLogs({
     ...(from && { from }),
     ...(to && { to }),
+    ...(projectId && { projectId }),
+    ...(employeeId && { employeeId }),
   });
   const logs = data?.data || [];
 
@@ -29,6 +36,28 @@ export default function WorkLogs() {
           <label className="label text-xs">To</label>
           <input type="date" className="input w-40" value={to} onChange={(e) => setTo(e.target.value)} />
         </div>
+        {user?.role !== 'EMPLOYEE' && (
+          <>
+            <div>
+              <label className="label text-xs">Project</label>
+              <select className="input w-40" value={projectId} onChange={(e) => setProjectId(e.target.value)}>
+                <option value="">All Projects</option>
+                {projectsData?.data?.map((p: any) => (
+                  <option key={p.id} value={p.id}>{p.name}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="label text-xs">Employee</label>
+              <select className="input w-40" value={employeeId} onChange={(e) => setEmployeeId(e.target.value)}>
+                <option value="">All Employees</option>
+                {employeesData?.data?.map((e: any) => (
+                  <option key={e.id} value={e.id}>{e.name}</option>
+                ))}
+              </select>
+            </div>
+          </>
+        )}
       </div>
 
       {isLoading ? (

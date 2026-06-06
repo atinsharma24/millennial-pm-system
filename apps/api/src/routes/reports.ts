@@ -18,6 +18,7 @@ import { authenticate } from '../middleware/auth';
 import { requireAdminOrPM } from '../middleware/rbac';
 import { AuthRequest } from '../types';
 import { ok } from '../utils/response';
+import { asyncHandler } from '../utils/asyncHandler';
 
 const router = Router();
 router.use(authenticate);
@@ -41,7 +42,7 @@ router.use(authenticate);
  *       200:
  *         description: Dashboard stats object (shape varies by role)
  */
-router.get('/dashboard', async (req: AuthRequest, res: Response) => {
+router.get('/dashboard', asyncHandler(async (req: AuthRequest, res: Response) => {
   const { userId, role } = req.user!;
 
   // ── Admin ────────────────────────────────────────────────────────────────
@@ -152,7 +153,7 @@ router.get('/dashboard', async (req: AuthRequest, res: Response) => {
     totalHoursLogged: hoursLogged._sum.hoursWorked ?? 0,
     recentLogs,
   });
-});
+}));
 
 // ─── Project report ───────────────────────────────────────────────────────────
 
@@ -166,24 +167,35 @@ router.get('/dashboard', async (req: AuthRequest, res: Response) => {
  *     security:
  *       - bearerAuth: []
  */
-router.get('/projects', requireAdminOrPM, async (req: AuthRequest, res: Response) => {
+router.get('/projects', requireAdminOrPM, asyncHandler(async (req: AuthRequest, res: Response) => {
   const where = req.user!.role === Role.PROJECT_MANAGER ? { managerId: req.user!.userId } : {};
 
   const projects = await prisma.project.findMany({
     where,
     include: {
       manager: { select: { name: true } },
-      tasks:   { select: { status: true } },
+      tasks:   { select: { status: true, deadline: true } }, // deadline needed for accurate overdue count
     },
     orderBy: { createdAt: 'desc' },
   });
 
+  const now = new Date();
   const report = projects.map((p) => {
     const total     = p.tasks.length;
     const completed = p.tasks.filter((t) => t.status === TaskStatus.COMPLETED).length;
-    const overdue   = p.tasks.filter(
-      (t) => t.status !== TaskStatus.COMPLETED
-    ).length; // simplified — real overdue needs deadline check
+
+    /**
+     * Overdue = tasks that are BOTH:
+     *   1. Not completed (status !== COMPLETED)
+     *   2. Past their deadline (deadline < now)
+     *
+     * Previously this was simplified to count all non-completed tasks which
+     * massively overstated the overdue count. Fixed to match the dashboard's
+     * correct calculation at reports.ts dashboard handler.
+     */
+    const overdue = p.tasks.filter(
+      (t) => t.status !== TaskStatus.COMPLETED && t.deadline < now
+    ).length;
 
     return {
       id:            p.id,
@@ -199,7 +211,7 @@ router.get('/projects', requireAdminOrPM, async (req: AuthRequest, res: Response
   });
 
   return ok(res, report);
-});
+}));
 
 // ─── Employee report ──────────────────────────────────────────────────────────
 
@@ -215,7 +227,7 @@ router.get('/projects', requireAdminOrPM, async (req: AuthRequest, res: Response
  *     security:
  *       - bearerAuth: []
  */
-router.get('/employees', requireAdminOrPM, async (req: AuthRequest, res: Response) => {
+router.get('/employees', requireAdminOrPM, asyncHandler(async (req: AuthRequest, res: Response) => {
   let employeeIds: string[] | undefined;
 
   if (req.user!.role === Role.PROJECT_MANAGER) {
@@ -261,6 +273,6 @@ router.get('/employees', requireAdminOrPM, async (req: AuthRequest, res: Respons
   });
 
   return ok(res, report);
-});
+}));
 
 export default router;
