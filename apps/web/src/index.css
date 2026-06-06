@@ -34,3 +34,79 @@
     @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium;
   }
 }
+
+/*
+ * ─── Notification Bell Animations ────────────────────────────────────────────
+ *
+ * animate-bell-ring: Gently rocks the bell icon left–right when there are
+ *   unread notifications. Uses a short keyframe sequence so it plays once on
+ *   mount and then settles.
+ *
+ * animate-dropdown-in: The notification panel slides in from slightly above
+ *   and fades in simultaneously. Gives the dropdown a polished feel.
+ *
+ * animate-pulse-once: The red unread-count badge scales up briefly then
+ *   returns to normal — draws the eye without being distracting.
+ *
+ * animate-slide-in: Used by ToastContext for the toast notification slide-in
+ *   from the bottom-right corner.
+ */
+
+@keyframes bell-ring {
+  0%   { transform: rotate(0deg);   }
+  10%  { transform: rotate(14deg);  }
+  20%  { transform: rotate(-12deg); }
+  30%  { transform: rotate(10deg);  }
+  40%  { transform: rotate(-8deg);  }
+  50%  { transform: rotate(6deg);   }
+  60%  { transform: rotate(0deg);   }
+  100% { transform: rotate(0deg);   }
+}
+
+@keyframes dropdown-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes pulse-once {
+  0%   { transform: scale(1);    }
+  30%  { transform: scale(1.25); }
+  60%  { transform: scale(0.95); }
+  100% { transform: scale(1);    }
+}
+
+@keyframes slide-in {
+  from {
+    opacity: 0;
+    transform: translateX(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@layer utilities {
+  .animate-bell-ring {
+    animation: bell-ring 1.2s ease-in-out;
+    transform-origin: top center;
+  }
+
+  .animate-dropdown-in {
+    animation: dropdown-in 0.18s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  }
+
+  .animate-pulse-once {
+    animation: pulse-once 0.45s ease-out;
+  }
+
+  .animate-slide-in {
+    animation: slide-in 0.25s ease-out;
+  }
+}
