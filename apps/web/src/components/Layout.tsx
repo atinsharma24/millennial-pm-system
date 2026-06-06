@@ -2,56 +2,98 @@
  * @file components/Layout.tsx
  * @description Authenticated shell layout.
  *
- * Renders the sidebar navigation and top bar.  The navigation links shown
- * depend on the logged-in user's role so employees never see admin pages.
+ * Renders the sidebar navigation and top bar. The navigation links shown
+ * depend on the logged-in user's role, so employees never see admin pages.
  *
- * Wraps children with `<SocketProvider>` (real-time events) and
- * `<ToastProvider>` (transient in-app messages).
+ * ## Provider tree
+ *
+ * ```
+ * <ToastProvider>      ← enables toast({ message }) anywhere in the subtree
+ *   <SocketProvider>   ← opens Socket.IO connection; provides unreadCount
+ *     <LayoutInner>    ← sidebar + topbar + page content
+ * ```
+ *
+ * `LayoutInner` is kept separate from `Layout` so it can safely call
+ * `useSocket()`, which requires `<SocketProvider>` to already be an ancestor.
+ *
+ * ## Navigation config
+ *
+ * `NAV_ITEMS` maps each role to an ordered list of sidebar links.
+ * Adding a new page is as simple as appending an entry here.
+ *
+ * | Role            | Pages visible                                    |
+ * |-----------------|--------------------------------------------------|
+ * | ADMIN           | All pages including Users, Audit Log             |
+ * | PROJECT_MANAGER | Dashboard, Projects, Tasks, Kanban, Logs, Reports|
+ * | EMPLOYEE        | Dashboard, My Tasks, Kanban, My Logs             |
+ *
+ * ## Top bar
+ *
+ * Contains the `<NotificationBell>` component (self-contained dropdown panel)
+ * and the logged-in user's display name.
+ *
+ * See: src/components/NotificationBell.tsx
  */
 
-import { ReactNode, useState } from 'react';
-import { Link, NavLink, useNavigate } from 'react-router-dom';
+import { ReactNode } from 'react';
+import { NavLink, useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../context/AuthStore';
-import { useNotifications, useMarkAllRead } from '../api/hooks';
 import { ToastProvider } from '../context/ToastContext';
-import { SocketProvider, useSocket } from '../context/SocketContext';
+import { SocketProvider } from '../context/SocketContext';
+import NotificationBell from './NotificationBell';
 import clsx from 'clsx';
 import api from '../api/client';
-import { formatDistanceToNow } from 'date-fns';
 
 // ─── Navigation config ────────────────────────────────────────────────────────
 
+/**
+ * Sidebar navigation items per role.
+ *
+ * Each entry has:
+ * - `to`    — react-router path (must match a <Route> in App.tsx)
+ * - `label` — display text
+ * - `icon`  — Unicode glyph or emoji shown beside the label
+ */
 const NAV_ITEMS = {
   ADMIN: [
-    { to: '/dashboard', label: 'Dashboard',  icon: '▦' },
-    { to: '/projects',  label: 'Projects',   icon: '◫' },
-    { to: '/tasks',     label: 'Tasks',      icon: '☑' },
-    { to: '/kanban',    label: 'Kanban',     icon: '⊞' },
-    { to: '/users',     label: 'Users',      icon: '👤' },
-    { to: '/reports',   label: 'Reports',    icon: '📊' },
-    { to: '/audit',     label: 'Audit Log',  icon: '🔍' },
+    { to: '/dashboard',      label: 'Dashboard',      icon: '▦'  },
+    { to: '/projects',       label: 'Projects',       icon: '◫'  },
+    { to: '/tasks',          label: 'Tasks',          icon: '☑'  },
+    { to: '/kanban',         label: 'Kanban',         icon: '⊞'  },
+    { to: '/users',          label: 'Users',          icon: '👤' },
+    { to: '/reports',        label: 'Reports',        icon: '📊' },
+    { to: '/audit',          label: 'Audit Log',      icon: '🔍' },
+    { to: '/notifications',  label: 'Notifications',  icon: '🔔' },
   ],
   PROJECT_MANAGER: [
-    { to: '/dashboard', label: 'Dashboard',  icon: '▦' },
-    { to: '/projects',  label: 'Projects',   icon: '◫' },
-    { to: '/tasks',     label: 'Tasks',      icon: '☑' },
-    { to: '/kanban',    label: 'Kanban',     icon: '⊞' },
-    { to: '/worklogs',  label: 'Work Logs',  icon: '📋' },
-    { to: '/reports',   label: 'Reports',    icon: '📊' },
+    { to: '/dashboard',      label: 'Dashboard',      icon: '▦'  },
+    { to: '/projects',       label: 'Projects',       icon: '◫'  },
+    { to: '/tasks',          label: 'Tasks',          icon: '☑'  },
+    { to: '/kanban',         label: 'Kanban',         icon: '⊞'  },
+    { to: '/worklogs',       label: 'Work Logs',      icon: '📋' },
+    { to: '/reports',        label: 'Reports',        icon: '📊' },
+    { to: '/notifications',  label: 'Notifications',  icon: '🔔' },
   ],
   EMPLOYEE: [
-    { to: '/dashboard', label: 'Dashboard',  icon: '▦' },
-    { to: '/tasks',     label: 'My Tasks',   icon: '☑' },
-    { to: '/kanban',    label: 'Kanban',     icon: '⊞' },
-    { to: '/worklogs',  label: 'My Logs',    icon: '📋' },
+    { to: '/dashboard',      label: 'Dashboard',      icon: '▦'  },
+    { to: '/tasks',          label: 'My Tasks',       icon: '☑'  },
+    { to: '/kanban',         label: 'Kanban',         icon: '⊞'  },
+    { to: '/worklogs',       label: 'My Logs',        icon: '📋' },
+    { to: '/notifications',  label: 'Notifications',  icon: '🔔' },
   ],
 };
 
 // ─── Layout root ─────────────────────────────────────────────────────────────
 
 /**
- * Wraps authenticated pages with the sidebar + topbar shell.
- * Also wraps with `ToastProvider` and `SocketProvider`.
+ * Public surface of the layout.
+ * Wraps authenticated pages with the sidebar + top-bar shell.
+ *
+ * All children receive access to:
+ * - Toast system (via `useToast()`)
+ * - Socket.IO real-time events (via `useSocket()`)
+ *
+ * @param children - The page component rendered in the main content area
  */
 export default function Layout({ children }: { children: ReactNode }) {
   return (
@@ -65,39 +107,60 @@ export default function Layout({ children }: { children: ReactNode }) {
 
 // ─── Inner layout (needs socket context) ─────────────────────────────────────
 
+/**
+ * Inner layout component that lives inside the provider tree.
+ *
+ * Kept as a separate function (not inlined into `Layout`) so that it can
+ * safely call `useSocket()` — which requires `<SocketProvider>` to already
+ * be mounted as an ancestor in the React tree.
+ *
+ * Renders:
+ * 1. Sidebar with role-filtered navigation links and sign-out button
+ * 2. Top bar with NotificationBell and user's name
+ * 3. `<main>` content area that receives `children`
+ */
 function LayoutInner({ children }: { children: ReactNode }) {
   const { user, clearAuth } = useAuthStore();
   const navigate = useNavigate();
-  const { unreadCount, clearUnread } = useSocket();
-  const [showNotifs, setShowNotifs] = useState(false);
-  const markAll = useMarkAllRead();
 
-  const { data: notifsData } = useNotifications({ unread: 'true', limit: '15' });
-  const notifs = notifsData?.data ?? [];
-
+  /**
+   * Log out the current user.
+   *
+   * 1. POST /api/auth/logout — invalidates the refresh token in the DB
+   *    (swallowed if network is unavailable)
+   * 2. `clearAuth()` — wipes accessToken, refreshToken, and user from Zustand
+   *    persisted store (localStorage)
+   * 3. Redirect to /login
+   */
   async function logout() {
-    try { await api.post('/auth/logout'); } catch {}
+    try { await api.post('/auth/logout'); } catch { /* intentionally swallowed */ }
     clearAuth();
     navigate('/login');
   }
 
-  function openBell() {
-    setShowNotifs((v) => !v);
-    clearUnread();
-  }
-
+  // Pick the correct nav items for this user's role (default to EMPLOYEE if unknown)
   const links = NAV_ITEMS[user?.role || 'EMPLOYEE'];
 
   return (
     <div className="min-h-screen flex">
+
       {/* ── Sidebar ────────────────────────────────────────────────────────── */}
+      {/*
+       * Fixed-width dark sidebar.
+       * sticky + h-screen keeps it in view while the main content scrolls.
+       */}
       <aside className="w-56 bg-brand-900 text-white flex flex-col shrink-0 sticky top-0 h-screen">
+
+        {/* App name + role label */}
         <div className="p-4 border-b border-brand-700">
           <div className="text-lg font-bold tracking-tight">Millennial PM</div>
-          <div className="text-xs text-brand-200 mt-0.5">{user?.role?.replace('_', ' ')}</div>
+          <div className="text-xs text-brand-200 mt-0.5">
+            {user?.role?.replace('_', ' ')}
+          </div>
         </div>
 
-        <nav className="flex-1 p-3 space-y-0.5 overflow-y-auto">
+        {/* Navigation links */}
+        <nav className="flex-1 p-3 space-y-0.5 overflow-y-auto" aria-label="Main navigation">
           {links.map((item) => (
             <NavLink
               key={item.to}
@@ -111,91 +174,58 @@ function LayoutInner({ children }: { children: ReactNode }) {
                 )
               }
             >
-              <span className="text-base leading-none">{item.icon}</span>
+              <span className="text-base leading-none" aria-hidden="true">{item.icon}</span>
               {item.label}
             </NavLink>
           ))}
         </nav>
 
+        {/* User info + sign-out */}
         <div className="p-3 border-t border-brand-700">
-          <p className="text-xs text-brand-300 truncate mb-1">{user?.name}</p>
-          <p className="text-xs text-brand-400 truncate mb-2">{user?.email}</p>
+          <p className="text-xs text-brand-300 truncate mb-0.5" title={user?.name}>{user?.name}</p>
+          <p className="text-xs text-brand-400 truncate mb-2" title={user?.email}>{user?.email}</p>
           <button
             onClick={logout}
-            className="text-xs text-brand-300 hover:text-white transition-colors"
+            className="text-xs text-brand-300 hover:text-white transition-colors focus:outline-none"
           >
             Sign out →
           </button>
         </div>
       </aside>
 
-      {/* ── Main area ──────────────────────────────────────────────────────── */}
+      {/* ── Main area ─────────────────────────────────────────────────────── */}
       <div className="flex-1 flex flex-col min-w-0">
-        {/* Top bar */}
-        <header className="bg-white border-b border-gray-200 px-6 py-3 flex items-center justify-end gap-3 sticky top-0 z-10">
-          {/* Notification bell */}
-          <div className="relative">
-            <button
-              onClick={openBell}
-              className="relative p-2 text-gray-500 hover:text-gray-700 rounded-lg hover:bg-gray-100 transition-colors"
-              title="Notifications"
-            >
-              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                  d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
-              </svg>
-              {unreadCount > 0 && (
-                <span className="absolute -top-0.5 -right-0.5 bg-red-500 text-white text-[10px] font-bold rounded-full w-4 h-4 flex items-center justify-center">
-                  {unreadCount > 9 ? '9+' : unreadCount}
-                </span>
-              )}
-            </button>
 
-            {/* Dropdown */}
-            {showNotifs && (
-              <>
-                <div
-                  className="fixed inset-0 z-40"
-                  onClick={() => setShowNotifs(false)}
-                />
-                <div className="absolute right-0 top-11 w-80 card shadow-xl z-50 max-h-96 overflow-y-auto">
-                  <div className="p-3 border-b flex justify-between items-center">
-                    <span className="font-semibold text-sm">Notifications</span>
-                    <button
-                      onClick={() => { markAll.mutate(); setShowNotifs(false); }}
-                      className="text-xs text-brand-600 hover:underline"
-                    >
-                      Mark all read
-                    </button>
-                  </div>
+        {/*
+         * Top bar — sticky so it stays visible as page content scrolls.
+         * z-10 ensures it sits above all page content but below modals (z-50).
+         *
+         * Contents (right-aligned):
+         * 1. <NotificationBell> — self-contained bell icon + dropdown panel
+         * 2. Vertical divider
+         * 3. User's display name
+         */}
+        <header
+          className="bg-white border-b border-gray-200 px-6 py-3 flex items-center justify-end gap-3 sticky top-0 z-10"
+          role="banner"
+        >
+          {/*
+           * NotificationBell
+           *
+           * Self-contained component. Internally it:
+           *   1. Reads `unreadCount` from SocketContext (incremented in real-time)
+           *   2. Fetches the latest 15 notifications via React Query on open
+           *   3. Handles mark-read and mark-all-read mutations
+           *   4. Provides a "View all →" link to /notifications
+           *
+           * Source: src/components/NotificationBell.tsx
+           */}
+          <NotificationBell />
 
-                  {notifs.length === 0 ? (
-                    <p className="p-4 text-sm text-gray-400 text-center">All caught up! 🎉</p>
-                  ) : (
-                    notifs.map((n: { id: string; message: string; type: string; isRead: boolean; sentAt: string }) => (
-                      <div
-                        key={n.id}
-                        className={clsx(
-                          'p-3 border-b last:border-0 text-sm',
-                          !n.isRead && 'bg-blue-50'
-                        )}
-                      >
-                        <p className="text-gray-800 text-xs leading-snug">{n.message}</p>
-                        <div className="flex justify-between items-center mt-1">
-                          <span className="text-xs text-gray-400">{n.type.replace(/_/g, ' ')}</span>
-                          <span className="text-xs text-gray-400">
-                            {formatDistanceToNow(new Date(n.sentAt), { addSuffix: true })}
-                          </span>
-                        </div>
-                      </div>
-                    ))
-                  )}
-                </div>
-              </>
-            )}
-          </div>
+          {/* Visual separator */}
+          <div className="h-5 w-px bg-gray-200" aria-hidden="true" />
 
-          <div className="h-5 w-px bg-gray-200" />
+          {/* Logged-in user's name */}
           <span className="text-sm font-medium text-gray-700">{user?.name}</span>
         </header>
 

@@ -9,6 +9,24 @@
  *
  * All authenticated routes render inside `<Layout>` which provides the sidebar,
  * top bar, toast system, and Socket.IO connection.
+ *
+ * Route table:
+ * | Path               | Guard          | Component         |
+ * |--------------------|----------------|-------------------|
+ * | /login             | Public         | Login             |
+ * | /forgot-password   | Public         | ForgotPassword    |
+ * | /reset-password    | Public         | ResetPassword     |
+ * | /dashboard         | All roles      | Dashboard         |
+ * | /projects          | All roles      | Projects          |
+ * | /projects/:id      | All roles      | ProjectDetail     |
+ * | /tasks             | All roles      | Tasks             |
+ * | /tasks/:id         | All roles      | TaskDetail        |
+ * | /kanban            | All roles      | Kanban            |
+ * | /worklogs          | All roles      | WorkLogs          |
+ * | /notifications     | All roles      | Notifications     |
+ * | /users             | Admin only     | Users             |
+ * | /audit             | Admin only     | AuditLog          |
+ * | /reports           | Admin + PM     | Reports           |
  */
 
 import { Routes, Route, Navigate } from 'react-router-dom';
@@ -29,6 +47,7 @@ import WorkLogs       from './pages/WorkLogs';
 import Users          from './pages/Users';
 import Reports        from './pages/Reports';
 import AuditLog       from './pages/AuditLog';
+import Notifications  from './pages/Notifications';
 
 // ─── Guards ───────────────────────────────────────────────────────────────────
 
@@ -65,13 +84,19 @@ export default function App() {
       <Route path="/reset-password"  element={<ResetPassword />} />
 
       {/* Authenticated — all roles */}
-      <Route path="/dashboard"    element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
-      <Route path="/projects"     element={<ProtectedRoute><Projects /></ProtectedRoute>} />
-      <Route path="/projects/:id" element={<ProtectedRoute><ProjectDetail /></ProtectedRoute>} />
-      <Route path="/tasks"        element={<ProtectedRoute><Tasks /></ProtectedRoute>} />
-      <Route path="/tasks/:id"    element={<ProtectedRoute><TaskDetail /></ProtectedRoute>} />
-      <Route path="/kanban"       element={<ProtectedRoute><Kanban /></ProtectedRoute>} />
-      <Route path="/worklogs"     element={<ProtectedRoute><WorkLogs /></ProtectedRoute>} />
+      <Route path="/dashboard"       element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
+      <Route path="/projects"        element={<ProtectedRoute><Projects /></ProtectedRoute>} />
+      <Route path="/projects/:id"    element={<ProtectedRoute><ProjectDetail /></ProtectedRoute>} />
+      <Route path="/tasks"           element={<ProtectedRoute><Tasks /></ProtectedRoute>} />
+      <Route path="/tasks/:id"       element={<ProtectedRoute><TaskDetail /></ProtectedRoute>} />
+      <Route path="/kanban"          element={<ProtectedRoute><Kanban /></ProtectedRoute>} />
+      <Route path="/worklogs"        element={<ProtectedRoute><WorkLogs /></ProtectedRoute>} />
+      {/*
+       * Notifications page — available to ALL authenticated roles.
+       * Employees see their own deadline reminders.
+       * PMs and Admins also see overdue alerts for their projects.
+       */}
+      <Route path="/notifications"   element={<ProtectedRoute><Notifications /></ProtectedRoute>} />
 
       {/* Admin only */}
       <Route path="/users"   element={<AdminRoute><Users /></AdminRoute>} />
