@@ -1,19 +1,19 @@
 version: "3.9"
 
 services:
-  mysql:
-    image: mysql:8.0
-    container_name: millennial_mysql
+  postgres:
+    image: postgres:16-alpine
+    container_name: millennial_postgres
     restart: unless-stopped
     environment:
-      MYSQL_ROOT_PASSWORD: password
-      MYSQL_DATABASE: millennial_pm
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: millennial_pm
     ports:
-      - "3306:3306"
+      - "5432:5432"
     volumes:
-      - mysql_data:/var/lib/mysql
+      - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -39,16 +39,16 @@ services:
     container_name: millennial_api
     restart: unless-stopped
     depends_on:
-      mysql:
+      postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
     environment:
-      DATABASE_URL: mysql://root:password@mysql:3306/millennial_pm
+      DATABASE_URL: postgresql://postgres:password@postgres:5432/millennial_pm
       REDIS_HOST: redis
       REDIS_PORT: 6379
-      JWT_ACCESS_SECRET: docker-access-secret
-      JWT_REFRESH_SECRET: docker-refresh-secret
+      JWT_ACCESS_SECRET: docker-access-secret-change-in-prod
+      JWT_REFRESH_SECRET: docker-refresh-secret-change-in-prod
       JWT_ACCESS_EXPIRES_IN: 15m
       JWT_REFRESH_EXPIRES_IN: 7d
       NODE_ENV: production
@@ -74,6 +74,6 @@ services:
       - "5173:80"
 
 volumes:
-  mysql_data:
+  postgres_data:
   redis_data:
   api_uploads:

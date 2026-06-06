@@ -19,4 +19,6 @@ RUN mkdir -p uploads
 
 EXPOSE 4000
 
-CMD ["sh", "-c", "npx prisma migrate deploy && node dist/index.js"]
+# db push creates tables from schema without needing migration history files
+# Safe for a fresh database; use migrate deploy if you have existing data
+CMD ["sh", "-c", "npx prisma db push --accept-data-loss && node dist/index.js"]
