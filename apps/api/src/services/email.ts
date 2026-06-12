@@ -36,6 +36,13 @@ export interface EmailPayload {
 }
 
 export async function sendEmail(payload: EmailPayload): Promise<void> {
+  // In production with no SMTP creds, skip silently rather than attempting Ethereal
+  const smtpConfigured = !!(process.env.SMTP_USER && process.env.SMTP_PASS);
+  if (process.env.NODE_ENV === 'production' && !smtpConfigured) {
+    logger.warn(`Email skipped (no SMTP configured): ${payload.subject} → ${payload.to}`);
+    return;
+  }
+
   try {
     const t = await getTransporter();
     const info = await t.sendMail({

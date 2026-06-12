@@ -1,0 +1,113 @@
+##############################################################################
+# Millennial PM System — Render Blueprint
+#
+# This file defines the full infrastructure for the Millennial PM System on
+# Render's free tier.
+#
+# Services provisioned:
+#   1. millennial-pm-db        — PostgreSQL 16 (free)
+#   2. millennial-pm-redis     — Key Value / Redis (free)
+#   3. millennial-pm-api       — Node.js web service (free)
+#
+# Deploy via Render dashboard: New → Blueprint → connect this repo.
+# The blueprint reads this file and provisions everything automatically.
+#
+# ⚠  SMTP_HOST / SMTP_USER / SMTP_PASS are intentionally blank.
+#    Email reminders log a warning and are skipped rather than crashing.
+#    Set real SMTP credentials (e.g. Gmail app-password) in the Render
+#    dashboard → Environment after initial deploy.
+##############################################################################
+
+databases:
+  - name: millennial-pm-db
+    databaseName: millennial_pm
+    user: millennial
+    plan: free
+    region: oregon
+
+services:
+  #############################################################################
+  # Redis / Key Value — used by BullMQ scheduler
+  #############################################################################
+  - type: keyvalue
+    name: millennial-pm-redis
+    plan: free
+    region: oregon
+    ipAllowList: []          # only Render internal network can reach it
+
+  #############################################################################
+  # API — Express + Socket.IO + BullMQ
+  #############################################################################
+  - type: web
+    name: millennial-pm-api
+    region: oregon
+    plan: free
+    runtime: node
+    repo: https://github.com/atinsharma24/millennial-pm-system
+    branch: deploy/postgres-render-vercel
+    rootDir: apps/api
+
+    # Build: install deps, generate Prisma client, compile TypeScript
+    buildCommand: npm ci && npx prisma generate && npm run build
+
+    # Start: apply schema to DB then boot the server
+    # prisma db push is safe for first boot; switch to `migrate deploy` for
+    # schema changes after data exists.
+    startCommand: npx prisma db push --accept-data-loss && node dist/index.js
+
+    healthCheckPath: /health
+    autoDeploy: true
+
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 4000
+      - key: DATABASE_URL
+        fromDatabase:
+          name: millennial-pm-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          name: millennial-pm-redis
+          type: keyvalue
+          property: connectionString
+      - key: REDIS_HOST
+        fromService:
+          name: millennial-pm-redis
+          type: keyvalue
+          property: host
+      - key: REDIS_PORT
+        fromService:
+          name: millennial-pm-redis
+          type: keyvalue
+          property: port
+      - key: REDIS_PASSWORD
+        fromService:
+          name: millennial-pm-redis
+          type: keyvalue
+          property: password
+      - key: JWT_ACCESS_SECRET
+        generateValue: true
+      - key: JWT_REFRESH_SECRET
+        generateValue: true
+      - key: JWT_ACCESS_EXPIRES_IN
+        value: 15m
+      - key: JWT_REFRESH_EXPIRES_IN
+        value: 7d
+      # FRONTEND_URL — update after Vercel deploy so CORS allows the real origin
+      - key: FRONTEND_URL
+        value: https://millennial-pm.vercel.app
+      - key: EMAIL_FROM
+        value: "Millennial PM <noreply@millennialcompany.in>"
+      # SMTP — leave blank; scheduler logs + skips if unconfigured
+      - key: SMTP_HOST
+        value: ""
+      - key: SMTP_PORT
+        value: "587"
+      - key: SMTP_USER
+        value: ""
+      - key: SMTP_PASS
+        value: ""
+      - key: API_BASE_URL
+        value: https://millennial-pm-api.onrender.com
